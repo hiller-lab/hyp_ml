@@ -1,0 +1,278 @@
+import pandas as pd
+import random
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression, Lasso, Ridge, ElasticNet
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, AdaBoostRegressor, BaggingRegressor
+from xgboost import XGBRegressor
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.svm import SVR
+from sklearn.tree import DecisionTreeRegressor
+from catboost import CatBoostRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.inspection import permutation_importance
+import numpy as np
+
+#Molecules with the same substituent were not repeated in both the validation and test sets
+def check_letter(molecule):
+    if len(molecule) >= 2:
+        letter = molecule[1:]
+        if letter not in letter_dict:
+            letter_dict[letter] = True
+            return True
+    return False
+
+def check_letter_2(molecule):
+    if len(molecule) >= 2:
+        letter = molecule[1:]
+        if letter not in letter_dict_2:
+            letter_dict_2[letter] = True
+            return True
+    return False
+
+#Tested models
+models = {
+    'RandomForest': RandomForestRegressor(n_estimators=200, random_state=42),
+    'GradientBoosting': GradientBoostingRegressor(random_state=42),
+    'XGBoost': XGBRegressor(random_state=42),
+    'LinearRegression': LinearRegression(),
+    'KNeighbors': KNeighborsRegressor(),
+    'SVR': SVR(),
+    'DecisionTree': DecisionTreeRegressor(random_state=42),
+    'Lasso': Lasso(random_state=42),
+    'Ridge': Ridge(random_state=42),
+    'ElasticNet': ElasticNet(random_state=42),
+    'AdaBoost': AdaBoostRegressor(random_state=42),
+    'Bagging': BaggingRegressor(random_state=42),
+    'CatBoost': CatBoostRegressor(random_state=42, silent=True),
+}
+
+#Loop over no of iterations
+results_r2 = {name: [] for name in models.keys()}
+results_mse = {name: [] for name in models.keys()}
+feature_importances = {name: np.zeros(len(['ABS EPR parameter ratio', 'Nucleophilicity index', 'Adiabatic IP (eV)', 'Negative Fukui Index', 'logP'])) for name in models.keys()}
+
+iterations = 1000
+
+for iteration in range(iterations):
+
+    #Excel input file
+    file_path = '...\Excel_input_file.xlsx' #Pathway to Excel input file
+    sheet_name = 'Calculated_properties'
+    data = pd.read_excel(file_path, sheet_name=sheet_name)
+    features = ['Molecule', 'Hydrogen atom position', 'ABS EPR parameters ratio', 'Nucleophilicity index', 'Adiabatic IP (eV)', 'Negative Fukui Index', 'logP']
+    selected_features = features[2:]
+    target_variable = 'ABS SNE Average'
+    set_molecules = ['2M5F', 'I', '4F', '5F', '6F', '7F', '4OH', '5OH', '6OH', '7OH', '4COOH',
+                     '5COOH', '6COOH', '7COOH', '4M', '5M', '6M', '7M', '4OM', '5OM', '6OM', '7OM', '4N', '5N', '6N', '7N']
+    random.shuffle(set_molecules)
+    letter_dict = {}
+    letter_dict_2 = {}
+    train_molecules = []
+    val_molecules = []
+    test_molecules = []
+
+    #Data splitting into test, validation and training set
+    while len(test_molecules) < 7 and set_molecules:
+        molecule = random.choice(set_molecules)
+        if check_letter(molecule):
+            test_molecules.append(molecule)
+            set_molecules.remove(molecule)
+
+    while len(val_molecules) < 5 and set_molecules:
+        molecule = random.choice(set_molecules)
+        if check_letter_2(molecule) and molecule not in test_molecules:
+            val_molecules.append(molecule)
+            set_molecules.remove(molecule)
+
+    for molecule in set_molecules:
+        if molecule not in test_molecules and molecule not in val_molecules:
+            train_molecules.append(molecule)
+
+    train_data = data[data['Molecule'].isin(train_molecules)]
+    test_data = data[data['Molecule'].isin(test_molecules)]
+
+    X_train = train_data[selected_features]
+    X_test = test_data[selected_features]
+
+    Y_train = train_data[target_variable].values
+    Y_test = test_data[target_variable].values
+
+    scaler_X = StandardScaler()
+    X_train_scaled = scaler_X.fit_transform(X_train)
+    X_test_scaled = scaler_X.transform(X_test)
+
+    for name, model in models.items():
+        model.fit(X_train_scaled, Y_train)
+        Y_test_pred = model.predict(X_test_scaled)
+
+        mse_test = mean_squared_error(Y_test, Y_test_pred)
+        r2_test = r2_score(Y_test, Y_test_pred)
+
+        results_r2[name].append(r2_test)
+        results_mse[name].append(mse_test)
+
+        print(f'Model: {name}')
+        print(f'Test set Mean Squared Error: {mse_test}')
+        print(f'Test set R-squared: {r2_test}')
+
+        #Collect feature importances
+        if hasattr(model, 'feature_importances_'): #For tree-based models
+            feature_importances[name] += model.feature_importances_
+        elif hasattr(model, 'coef_'): #For linear models
+            feature_importances[name] += np.abs(model.coef_)
+        else: #For other models
+            perm_importance = permutation_importance(model, X_test_scaled, Y_test, n_repeats=30, random_state=42)
+            feature_importances[name] += perm_importance.importances_mean
+
+#Average the feature importances over the number of iterations
+for name in models.keys():
+    feature_importances[name] /= iterations
+
+#Plots
+plt.rcParams.update({'font.size': 4.5})
+
+#Boxplot for R-squared values
+flierprops = dict(marker='o', markersize=3, linestyle='none', markeredgecolor='black', markeredgewidth=0.25)
+boxprops = dict(linewidth=0.5)
+whiskerprops = dict(linewidth=0.5)
+capprops = dict(linewidth=0.5)
+medianprops = dict(linewidth=0.5)
+
+plt.figure(figsize=(8, 13))
+plt.boxplot([results_r2[name] for name in models.keys()],
+            labels=models.keys(),
+            flierprops=flierprops,
+            boxprops=boxprops,
+            whiskerprops=whiskerprops,
+            capprops=capprops,
+            medianprops=medianprops)
+plt.title('Distribution of R-squared values over {} iterations'.format(iterations), fontsize=4.5)
+plt.ylabel('R-squared', fontsize=4.5)
+plt.xlabel('Models', fontsize=4.5)
+plt.ylim(0, 1)
+plt.xticks(rotation=45)
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
+plt.subplots_adjust(bottom=0.2)
+plt.savefig('R_squared_ML.pdf', format='pdf', bbox_inches='tight')
+plt.show()
+
+#Boxplot for MSE
+plt.figure(figsize=(8, 13))
+plt.boxplot([results_mse[name] for name in models.keys()],
+            labels=models.keys(),
+            flierprops=flierprops,
+            boxprops=boxprops,
+            whiskerprops=whiskerprops,
+            capprops=capprops,
+            medianprops=medianprops)
+plt.title('Distribution of Mean Squared Error (MSE) values', fontsize=4.5)
+plt.xlabel('Models', fontsize=4.5)
+plt.ylabel('MSE', fontsize=4.5)
+plt.xticks(rotation=45)
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
+plt.subplots_adjust(bottom=0.2)
+plt.savefig('MSE_ML.pdf', format='pdf', bbox_inches='tight')
+plt.show()
+
+#Line plot for R-squared values over iterations
+colors = plt.cm.tab20(np.linspace(0, 1, len(models)))
+plt.figure(figsize=(40, 12))
+for color, name in zip(colors, models.keys()):
+    plt.plot(range(iterations), results_r2[name], marker='o', label=name, color=color)
+plt.title('R-squared versus Iteration', fontsize=22)
+plt.xlabel('Iteration', fontsize=18)
+plt.ylabel('R-squared', fontsize=18)
+plt.ylim(0, 1)
+plt.xlim(0, iterations - 1)
+plt.legend(fontsize=14, bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
+plt.subplots_adjust(left=0.05)
+plt.savefig('R_squared_over_iteration.pdf', format='pdf', bbox_inches='tight')
+plt.show()
+
+#Print Mean R-squared and MSE
+for name in models.keys():
+    print(f"{name} - Mean R-squared: {np.mean(results_r2[name])}, Std R-squared: {np.std(results_r2[name])}")
+    print(f"{name} - Mean MSE: {np.mean(results_mse[name])}, Std MSE: {np.std(results_mse[name])}")
+
+#Plot feature importances
+# for name in models.keys():
+#     plt.figure(figsize=(7, 4))
+#     plt.barh(selected_features, feature_importances[name])
+#     plt.xlabel('Average Importance')
+#     plt.title(f'Feature Importance for {name}')
+#     plt.rcParams['pdf.fonttype'] = 42
+#     plt.rcParams['ps.fonttype'] = 42
+#     plt.savefig(f'{name}_importance.pdf', format='pdf', bbox_inches='tight')
+#     plt.show()
+
+
+# Create a DataFrame to store R-squared values for each iteration and model
+r2_results_df = pd.DataFrame()
+r2_results_df['Iteration'] = range(1, iterations + 1)
+
+for name in models.keys():
+    r2_results_df[name] = results_r2[name]
+print(r2_results_df)
+r2_results_df.to_csv('r2_values_by_iteration.csv', index=False)
+
+# Function to calculate outliers using Interquartile Range (IQR) method
+def count_outliers(values):
+    Q1 = np.percentile(values, 25)
+    Q3 = np.percentile(values, 75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    outliers = [v for v in values if v < lower_bound or v > upper_bound]
+    return len(outliers)
+
+# Compute performance statistics and save to Excel
+performance_stats_df = pd.DataFrame()
+performance_stats_df['Model'] = list(models.keys())
+for metric, results in [('R-squared', results_r2), ('MSE', results_mse)]:
+    mean_values = []
+    std_values = []
+    min_values = []
+    max_values = []
+    range_values = []
+    cv_values = []
+    outliers_count = [] 
+
+    for name in models.keys():
+        mean_val = np.mean(results[name])
+        std_val = np.std(results[name])
+        min_val = np.min(results[name])
+        max_val = np.max(results[name])
+        range_val = max_val - min_val
+        cv_val = std_val / mean_val if mean_val != 0 else 0
+        outliers_val = count_outliers(results[name])  
+
+        mean_values.append(mean_val)
+        std_values.append(std_val)
+        min_values.append(min_val)
+        max_values.append(max_val)
+        range_values.append(range_val)
+        cv_values.append(cv_val)
+        outliers_count.append(outliers_val)
+
+
+    performance_stats_df[f'{metric}_Mean'] = mean_values
+    performance_stats_df[f'{metric}_Std'] = std_values
+    performance_stats_df[f'{metric}_Min'] = min_values
+    performance_stats_df[f'{metric}_Max'] = max_values
+    performance_stats_df[f'{metric}_Range'] = range_values
+    performance_stats_df[f'{metric}_CV'] = cv_values
+    performance_stats_df[f'{metric}_Outliers'] = outliers_count  
+
+
+print(performance_stats_df)
+
+
+output_file_path = 'model_performance_fluctuations.xlsx'
+performance_stats_df.to_excel(output_file_path, index=False)
+
+print(f"Performance fluctuations saved to {output_file_path}")

@@ -1,0 +1,150 @@
+import pandas as pd
+from catboost import CatBoostRegressor
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, r2_score
+import random
+import matplotlib.pyplot as plt
+import xlsxwriter
+
+# Excel input file
+file_path = '...'  # Pathway to Excel input file
+sheet_name = 'Calculated_properties'
+data = pd.read_excel(file_path, sheet_name=sheet_name)
+
+# Feature and target selection
+features = ['Molecule', 'Proton', 'ABS EPR parameter ratio', 'Nucleophilicity index',
+            'Adiabatic IP (eV)', 'Negative Fukui Index', 'logP']
+selected_features = features[2:]
+target_variable = 'ABS SNE Average'
+
+# Define the set of molecules
+set_molecules = ['2M5F', 'I', '4F', '5F', '6F', '7F', '4OH', '5OH', '6OH', '7OH', '4COOH',
+                 '5COOH', '6COOH', '7COOH', '4M', '5M', '6M', '7M', '4OM', '5OM', '6OM', '7OM', '4N', '5N', '6N', '7N']
+random.shuffle(set_molecules)
+
+# Dictionaries to check for repeating substituents
+letter_dict = {}
+letter_dict_2 = {}
+
+train_molecules = []
+val_molecules = []
+test_molecules = []
+
+# Function to check if a molecule can be added to the test set
+def check_letter(molecule):
+    if len(molecule) >= 2:
+        letter = molecule[1:]
+        if letter not in letter_dict:
+            letter_dict[letter] = True
+            return True
+    return False
+
+# Function to check if a molecule can be added to the validation set
+def check_letter_2(molecule):
+    if len(molecule) >= 2:
+        letter = molecule[1:]
+        if letter not in letter_dict_2:
+            letter_dict_2[letter] = True
+            return True
+    return False
+
+# Data splitting into test, validation, and training sets
+while len(test_molecules) < 7 and set_molecules:
+    molecule = random.choice(set_molecules)
+    if check_letter(molecule):
+        test_molecules.append(molecule)
+        set_molecules.remove(molecule)
+
+while len(val_molecules) < 5 and set_molecules:
+    molecule = random.choice(set_molecules)
+    if check_letter_2(molecule) and molecule not in test_molecules:
+        val_molecules.append(molecule)
+        set_molecules.remove(molecule)
+
+for molecule in set_molecules:
+    if molecule not in test_molecules and molecule not in val_molecules:
+        train_molecules.append(molecule)
+
+# Splitting data into train and test datasets
+train_data = data[data['Molecule'].isin(train_molecules)]
+test_data = data[data['Molecule'].isin(test_molecules)]
+
+# Selecting features and target variables
+X_train = train_data[features]
+X_test = test_data[features]
+Y_train = train_data[target_variable].values
+Y_test = test_data[target_variable].values
+
+# Selecting only numerical features for scaling
+X_train_numerical = X_train[selected_features]
+X_test_numerical = X_test[selected_features]
+
+# Standardizing the data
+scaler_X = StandardScaler()
+X_train_scaled = scaler_X.fit_transform(X_train_numerical)
+X_test_scaled = scaler_X.transform(X_test_numerical)
+
+# Function to train model, predict, and evaluate
+def train_and_evaluate_model(model, X_train_scaled, Y_train, X_test_scaled, Y_test, model_name):
+    model.fit(X_train_scaled, Y_train)
+    Y_test_pred = model.predict(X_test_scaled)
+    mse_test = mean_squared_error(Y_test, Y_test_pred)
+    r2_test = r2_score(Y_test, Y_test_pred)
+    return Y_test_pred, mse_test, r2_test
+
+# Train and evaluate CatBoost
+catboost_model = CatBoostRegressor(iterations=200, random_state=42, verbose=0)
+Y_test_pred_catboost, mse_test_catboost, r2_test_catboost = train_and_evaluate_model(catboost_model, X_train_scaled, Y_train, X_test_scaled, Y_test, 'CatBoost')
+
+# Train and evaluate KNeighbors
+knn_model = KNeighborsRegressor(n_neighbors=5)
+Y_test_pred_knn, mse_test_knn, r2_test_knn = train_and_evaluate_model(knn_model, X_train_scaled, Y_train, X_test_scaled, Y_test, 'KNeighbors')
+
+# Function to plot results
+def plot_results(Y_test, Y_test_pred, r2_test, mse_test, model_name, color):
+    plt.figure(figsize=(8, 6))
+    plt.scatter(Y_test.flatten(), Y_test_pred.flatten(), color=color, label='Test Set')
+    plt.plot([min(Y_test.flatten()), max(Y_test.flatten())], [min(Y_test.flatten()), max(Y_test.flatten())], color='red', linestyle='--')
+    plt.xlabel('Experimental SNE')
+    plt.ylabel('Predicted SNE')
+    plt.title(f'Predicted vs Experimental SNE for Test Set ({model_name})')
+    plt.text(0.05, 0.86, f'R2 = {r2_test:.2f}\nMSE = {mse_test:.2f}', transform=plt.gca().transAxes)
+    plt.legend(loc='upper center', bbox_to_anchor=(0.5, 1.15))
+    plt.grid(True)
+    plt.text(0.5, -0.13, f'Training Set: {", ".join(train_molecules)}', horizontalalignment='center', verticalalignment='center', transform=plt.gca().transAxes)
+    plt.text(0.5, -0.16, f'Validation Set: {", ".join(val_molecules)}', horizontalalignment='center', verticalalignment='center', transform=plt.gca().transAxes)
+    plt.text(0.5, -0.19, f'Test Set: {", ".join(test_molecules)}', horizontalalignment='center', verticalalignment='center', transform=plt.gca().transAxes)
+    plt.subplots_adjust(bottom=0.15)
+    plt.rcParams['pdf.fonttype'] = 42
+    plt.rcParams['ps.fonttype'] = 42
+    plt.savefig(f'{model_name}.pdf', format='pdf', bbox_inches='tight')
+    plt.show()
+
+# Plot results for CatBoost
+plot_results(Y_test, Y_test_pred_catboost, r2_test_catboost, mse_test_catboost, 'CatBoost', 'orange')
+
+# Plot results for KNeighbors
+plot_results(Y_test, Y_test_pred_knn, r2_test_knn, mse_test_knn, 'KNeighbors', 'green')
+
+# Creating an Excel file with results
+# output_file_path = '...\Predicted_SNE.xlsx' # Pathway to Excel output file
+# workbook = xlsxwriter.Workbook(output_file_path)
+# worksheet = workbook.add_worksheet()
+
+# Writing headers
+# headers = ['Experimental SNE', 'Predicted SNE CatBoost', 'Predicted SNE KNeighbors']
+# for col, header in enumerate(headers):
+#     worksheet.write(0, col, header)
+
+# Writing data
+# for row, (exp, pred_cat, pred_knn) in enumerate(zip(Y_test, Y_test_pred_catboost, Y_test_pred_knn), start=1):
+#     worksheet.write(row, 0, exp)
+#     worksheet.write(row, 1, pred_cat)
+#     worksheet.write(row, 2, pred_knn)
+#
+# workbook.close()
+
+print("Train Molecules:", train_molecules)
+print("Validation Molecules:", val_molecules)
+print("Test Molecules:", test_molecules)
