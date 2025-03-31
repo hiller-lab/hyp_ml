@@ -46,7 +46,7 @@ all_predicted_values = {name: [] for name in models.keys()}
 for iteration in range(iterations):
 
     # Excel input file
-    file_path = '/Users/stefan0005/Desktop/JACS_resubmission/Sent_01/Input_file_all_data.xlsx'
+    file_path = './Input_file_all_data.xlsx'
     sheet_name = 'Data'
     data = pd.read_excel(file_path, sheet_name=sheet_name)
     features = ['Molecule', 'Atom', 'aiso (MHz)', 'delta g', 'Nucleophilicity index', 'Adiabatic Ionization Potential (eV)',
